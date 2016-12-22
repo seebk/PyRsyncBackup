@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """ Python rsync backup script
 
-Copyright 2013-2014 Sebastian Kraft
+Copyright 2013-2016 Sebastian Kraft
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -77,7 +77,7 @@ def find_last_backup(backupRoot):
 
 # ------------------------------------------------------
 # open and parse the config file
-config = configparser.ConfigParser()
+config = configparser.ConfigParser({"Exclude": "", "Group": "", "Name": ""})
 
 if len(sys.argv) != 2:
     print("ERROR: No config file specified!\nUsage: pyrsyncback myconfig.ini")
@@ -97,6 +97,7 @@ BACKUP_LIST = config.sections()
 BACKUP_LIST.remove("General")
 WRITE_LOGFILE = config.getboolean("General", "WriteLogfile")
 TARGET_DIRECTORY = config.get("General", "TargetFolder")
+GENERAL_EXCLUDE = config.get("General", "Exclude")
 
 
 # check if target directory is mounted
@@ -116,15 +117,13 @@ for currBackupItem, key in enumerate(BACKUP_LIST):
 
     backupEntry = dict(config.items(key))
     backupEntry["path"] = key
+    if not backupEntry["name"]:
+        backupEntry["name"] = os.path.basename(os.path.normpath(backupEntry["path"]))
 
-    if ("group" not in backupEntry):
-        print2log("Group is a mandatory entry in a backup section!\n", logFile)
-        sys.exit()
-
-    countStr = "("+str(currBackupItem)+"/"+str(len(BACKUP_LIST))+")"
+    countStr = "("+str(currBackupItem+1)+"/"+str(len(BACKUP_LIST))+")"
     
     print2log("\n-----------------------------------------------------------\n", logFile)
-    print2log("Backing up <" + backupEntry["path"] + "> " + countStr +"\n", logFile)
+    print2log("Backing up " + backupEntry["name"] + " <" + backupEntry["path"] + "> " + countStr +"\n", logFile)
     print2log("-----------------------------------------------------------\n", logFile)
 
     # check if source directory exists    
@@ -134,21 +133,20 @@ for currBackupItem, key in enumerate(BACKUP_LIST):
         continue
 
     # build filename for target directory
-    # Scheme: TARGET_DIRECTORY/GROUP/FolderName/TIMESTAMP/
+    # Scheme: TARGET_DIRECTORY/[GROUP]/BackupName/TIMESTAMP/
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
-    backupFolderName = os.path.basename(os.path.normpath(backupEntry["path"]))
     groupRoot = os.path.join(TARGET_DIRECTORY, backupEntry["group"])
-    backupRoot = os.path.join(TARGET_DIRECTORY, backupEntry["group"], backupFolderName)
+    backupRoot = os.path.join(TARGET_DIRECTORY, backupEntry["group"], backupEntry["name"])
 
-    # check for previous backups
+    # check for previous backups to be used as a hardlink reference
     previous_backup_link = ''
     last_backup = find_last_backup(backupRoot)
 
     if last_backup:
-        print2log("+ Previous backup will be used as hard link reference: "+last_backup+"\n", logFile)
+        print2log("+ Previous backup will be used as hard link reference: \n   " + last_backup + "\n", logFile)
         previous_backup_link = '--link-dest="' + last_backup + '" '
     else:
-        print2log("WARNING: No previous data for incremental backups were found!\n", logFile)
+        print2log("WARNING: No previous data for incremental backups was found in \n   " + backupRoot + "\n", logFile)
         if ask_ok("Should a complete backup be performed? (y/n)"):
             if not os.path.exists(groupRoot):
                 os.mkdir(groupRoot)
@@ -156,14 +154,19 @@ for currBackupItem, key in enumerate(BACKUP_LIST):
                 os.mkdir(backupRoot)
         else:
             # continue with next backup item
-            continue            
+            continue
             
-    # assemble rsync commandline
-    backupDirResolved = backupEntry["path"].replace("ssh://", "-e ssh ", 1) + os.path.sep
-    if "exclude" in backupEntry:
-        excludeStr = ['--exclude=%s' % x.strip() for x in backupEntry["exclude"].split(',')]
+    # prepare exlude statement
+    excludeList = GENERAL_EXCLUDE.split(',')
+    excludeList = excludeList + backupEntry.get("exclude").split(',')
+    
+    if excludeList:
+        excludeStr = ['--exclude=%s' % x.strip() for x in excludeList]
     else:
         excludeStr = ""
+
+    # assemble rsync commandline
+    backupDirResolved = backupEntry["path"].replace("ssh://", "-e ssh ", 1) + os.path.sep
     rsynccmd  = 'rsync -aP ' + previous_backup_link + ' ' + backupDirResolved + ' ' + os.path.join(backupRoot, timestamp + '_tmp') + ' ' + ' '.join(excludeStr)
     print2log("+ CMD>$ " + rsynccmd + "\n\n", logFile)
 
